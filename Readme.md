@@ -9,7 +9,7 @@
 - Provides side-by-side comparison of Python and Rust code using Godbolt in the web UI
 - Shows python programmers roughly equivalent (mostly) idiomatic rust code
 
-The web UI has an option to show the python and rust code side by side in godbolt.
+The [web UI](https://benmkw.github.io/p2r/) has an option to show the python and rust code side by side in godbolt.
 
 For supported Python features, please refer to `p2r/src/test.rs`.
 
