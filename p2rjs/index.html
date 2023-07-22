@@ -1,0 +1,173 @@
+<!doctype html>
+
+<head>
+    <style>
+        section {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto auto;
+            grid-gap: 10px;
+            grid-auto-flow: column;
+            height: 600px;
+        }
+
+        section div {
+            border: 1px solid #000;
+        }
+    </style>
+
+    <meta charset="utf-8" />
+    <title>python to rust</title>
+</head>
+
+<body>
+
+    <section>
+        <textarea rows="30" cols="50" id="python_text" name="python_text" onInput="p2r_internal(this.value);"
+            class="textBox">
+from dataclasses import dataclass
+
+
+@dataclass
+class F:
+    i : int
+    f : float
+
+    def m(self, other : int) -> float:
+        assert other != 1000, "oh no!"
+        return self.f + float(other)
+
+f = F(f=3.1, i=10)
+
+a = 3
+res = [float(x) for x in range(4) if x % 2 == 0]
+for i in range(10):
+    res.append(float(a * 3) ** float(i))
+    res.append(f.m(i))
+
+print(res)
+assert len(res) > 0 and not 12345.6 in res
+
+from enum import Enum
+class EFoo(Enum):
+    A = 1
+    B = 2
+
+a_inst = EFoo.A</textarea>
+        <div id="parseErr"></div>
+
+        <textarea rows="30" cols="50" id="rust_text" name="rust_text" class="textBox"> </textarea>
+        <div id="transpileErr"></div>
+    </section>
+
+    <a href="https://godbolt.org/z/sEvh4qKno" id="Assembly">Assembly</a>
+
+
+    <script type="module">
+        import init, { greet, p2r } from "./pkg/p2rjs.js";
+
+        init().then(() => {
+            // smoke test
+            const python = "[x for x in range(10)]";
+            const rust = p2r(python);
+            console.log("python", python);
+            console.log("rust", rust);
+        });
+
+        const godbolt = (rust_source, python_source) => {
+            // thanks to
+            // https://www.foonathan.net/2021/05/hugo-godbolt/#content
+            const request = JSON.stringify({
+                "sessions": [
+                    {
+                        "id": 1,
+                        "language": "python",
+                        "source": String(python_source),
+                        "compilers": [{
+                            "lang": "python",
+                            "id": "cpython",
+                            "options": "",
+                        }],
+                        "executors": [
+                            {
+                                "compiler": {
+                                    "lang": "python",
+                                    "id": "cpython",
+                                    "libs": [],
+                                    "options": ""
+                                }
+                            }
+                        ]
+                    },
+                    {
+                        "id": 2,
+                        "language": "rust",
+                        "source": String(rust_source),
+                        "compilers": [{
+                            "lang": "rust",
+                            "id": "nightly",
+                            "options": "-O",
+                        }],
+                        "executors": [
+                            {
+                                "compiler": {
+                                    "lang": "rust",
+                                    "id": "nightly",
+                                    "libs": [],
+                                    "options": "-O"
+                                }
+                            }
+                        ]
+                    }
+                ]
+            })
+            console.log(request)
+            return window.encodeURI(`https://godbolt.org/clientstate/${btoa(request)}`)
+        }
+
+
+        const p2r_internal = (text_python) => {
+            const res = p2r(text_python);
+            if (res.res_t == "ok") {
+                document.getElementById("Assembly").href = godbolt("pub " + document.getElementById("rust_text").value, document.getElementById("python_text").value);
+
+                document.getElementById("rust_text").value = res.code;
+
+                document.getElementById("transpileErr").innerHTML = "";
+                document.getElementById("parseErr").innerHTML = "";
+            } else if (res.res_t == "TranspileError") {
+                document.getElementById("transpileErr").innerHTML = `TODO impl at file: ${res.file}:${res.line}`;
+                // if transpilation had an error, the parser had a success
+                document.getElementById("parseErr").innerHTML = "";
+            } else if (res.res_t == "ParseError") {
+                document.getElementById("parseErr").innerHTML = `python parse error: ${res.parse_error}`;
+                document.getElementById("transpileErr").innerHTML = "";
+            } else {
+                console.assert(false)
+            }
+        }
+
+        const python_text = document.getElementById("python_text");
+        python_text.p2r_internal = p2r_internal;
+        // python_text.dispatchEvent(new Event('input'))
+
+        // https://stackoverflow.com/questions/6637341/use-tab-to-indent-in-textarea
+        document.getElementById('python_text').addEventListener('keydown', function (e) {
+            if (e.key == 'Tab') {
+                e.preventDefault();
+                var start = this.selectionStart;
+                var end = this.selectionEnd;
+
+                // set textarea value to: text before caret + tab + text after caret
+                this.value = this.value.substring(0, start) +
+                    "\t" + this.value.substring(end);
+
+                // put caret at right position again
+                this.selectionStart =
+                    this.selectionEnd = start + 1;
+            }
+        });
+    </script>
+</body>
+
+</html>

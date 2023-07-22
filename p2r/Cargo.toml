@@ -1,0 +1,13 @@
+[package]
+name = "p2r"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rustpython-parser  = { workspace = true }
+prettyplease = { version ="0.2.10", default-features = false }
+syn = { version ="2.0.25", default-features = false, features = ["parsing"] }
+
+[dev-dependencies]
+expect-test = "1.4.1"
+indoc = "2"

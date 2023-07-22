@@ -1,0 +1,17 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "p2r",
+    "p2rjs",
+    "bin"
+]
+
+
+[workspace.dependencies]
+# rustpython-parser = { git = "https://github.com/RustPython/Parser", features = ["full-lexer"], rev = "704eb40"  }
+rustpython-parser = { git = "https://github.com/RustPython/Parser", rev = "704eb40" }
+# rustpython-parser = { version = "0.2.0", features = ["full-lexer"] }
+
+# TODO why is ast::unparse not exposed?
+# rustpython-ast = { git = "https://github.com/RustPython/Parser", rev = "704eb40", features = ["unparse"] }
