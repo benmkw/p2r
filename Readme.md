@@ -60,6 +60,11 @@ This project is a work in progress, and there are several enhancements and featu
 - Use ACE as the editor instead of a textarea and show errors at positions in the file in the web UI.
 - Generate a whole cargo project for CLI users.
 
+## Related Work
+
+- [pyrs](https://github.com/konchunas/pyrs)
+- [py2many](https://github.com/py2many/py2many)
+
 ## License
 
 Licensed under either of Apache License, Version 2.0 or MIT license at your option.
