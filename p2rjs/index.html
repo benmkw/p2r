@@ -63,16 +63,17 @@ a_inst = EFoo.A</textarea>
     <a href="https://godbolt.org/z/sEvh4qKno" id="Assembly">Assembly</a>
 
 
-    <script type="module">
+    <script type="module" async>
         import init, { greet, p2r } from "./pkg/p2rjs.js";
 
-        init().then(() => {
+        await init()
+        {
             // smoke test
             const python = "[x for x in range(10)]";
             const rust = p2r(python);
             console.log("python", python);
             console.log("rust", rust);
-        });
+        }
 
         const godbolt = (rust_source, python_source) => {
             // thanks to
@@ -120,8 +121,8 @@ a_inst = EFoo.A</textarea>
                         ]
                     }
                 ]
-            })
-            console.log(request)
+            });
+            // console.log(request)
             return window.encodeURI(`https://godbolt.org/clientstate/${btoa(request)}`)
         }
 
@@ -129,7 +130,7 @@ a_inst = EFoo.A</textarea>
         const p2r_internal = (text_python) => {
             const res = p2r(text_python);
             if (res.res_t == "ok") {
-                document.getElementById("Assembly").href = godbolt("pub " + document.getElementById("rust_text").value, document.getElementById("python_text").value);
+                document.getElementById("Assembly").href = godbolt("pub " + res.code, document.getElementById("python_text").value);
 
                 document.getElementById("rust_text").value = res.code;
 
@@ -149,7 +150,7 @@ a_inst = EFoo.A</textarea>
 
         const python_text = document.getElementById("python_text");
         python_text.p2r_internal = p2r_internal;
-        // python_text.dispatchEvent(new Event('input'))
+        python_text.dispatchEvent(new Event('input'))
 
         // https://stackoverflow.com/questions/6637341/use-tab-to-indent-in-textarea
         document.getElementById('python_text').addEventListener('keydown', function (e) {

@@ -288,7 +288,7 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
                     v = r_e(value, ctx)?
                 ))
             } else {
-                let v = r_e(&value, ctx)?;
+                let v = r_e(value, ctx)?;
                 let t = r_e(&targets[0], ctx)?;
                 if t.starts_with("self") {
                     Ok(format!("{t} = {v};\n"))
