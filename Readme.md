@@ -57,7 +57,7 @@ This project is a work in progress, and there are several enhancements and featu
 - Support common numpy operations and add ndarray prelude for it.
 - Handle `__init__` with `new`, not just dataclass-like classes.
 - Improve the web UI with dropdown examples scraped from tests.
-- Use ACE as the editor instead of a textarea and show errors at positions in the file in the web UI.
+- show errors at positions in the file in the web UI.
 - Generate a whole cargo project for CLI users.
 
 ## Related Work

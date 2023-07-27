@@ -10,10 +10,6 @@
             grid-auto-flow: column;
             height: 600px;
         }
-
-        section div {
-            border: 1px solid #000;
-        }
     </style>
 
     <meta charset="utf-8" />
@@ -23,10 +19,7 @@
 <body>
 
     <section>
-        <textarea rows="30" cols="50" id="python_text" name="python_text" onInput="p2r_internal(this.value);"
-            class="textBox">
-from dataclasses import dataclass
-
+        <pre id="python_text">from dataclasses import dataclass
 
 @dataclass
 class F:
@@ -53,15 +46,18 @@ class EFoo(Enum):
     A = 1
     B = 2
 
-a_inst = EFoo.A</textarea>
-        <div id="parseErr"></div>
+a_inst = EFoo.A</pre>
+        <div id="parseErr" style="border: 1px solid #000000"></div>
 
-        <textarea rows="30" cols="50" id="rust_text" name="rust_text" class="textBox"> </textarea>
-        <div id="transpileErr"></div>
+        <pre id="rust_text"></pre>
+        <div id="transpileErr" style="border: 1px solid #000000"></div>
     </section>
 
-    <a href="https://godbolt.org/z/sEvh4qKno" id="Assembly">Assembly</a>
+    <a href=" https://godbolt.org/z/sEvh4qKno" id="Assembly">Assembly</a>
 
+
+    <script src="ace.js" type="text/javascript" charset="utf-8"></script>
+    <script src="ext-language_tools.js" type="text/javascript" charset="utf-8"></script>
 
     <script type="module" async>
         import init, { greet, p2r } from "./pkg/p2rjs.js";
@@ -130,9 +126,11 @@ a_inst = EFoo.A</textarea>
         const p2r_internal = (text_python) => {
             const res = p2r(text_python);
             if (res.res_t == "ok") {
-                document.getElementById("Assembly").href = godbolt("pub " + res.code, document.getElementById("python_text").value);
+                document.getElementById("Assembly").href = godbolt("pub " + res.code, ace.edit("python_text").getValue());
 
-                document.getElementById("rust_text").value = res.code;
+                const editor = ace.edit("rust_text");
+                editor.setValue(res.code);
+                editor.clearSelection();
 
                 document.getElementById("transpileErr").innerHTML = "";
                 document.getElementById("parseErr").innerHTML = "";
@@ -148,26 +146,47 @@ a_inst = EFoo.A</textarea>
             }
         }
 
-        const python_text = document.getElementById("python_text");
-        python_text.p2r_internal = p2r_internal;
-        python_text.dispatchEvent(new Event('input'))
+        {
+            const editor = ace.edit("python_text");
+            editor.setKeyboardHandler("ace/keyboard/sublime");
+            editor.setOptions({
+                // enableBasicAutocompletion: true
+                enableLiveAutocompletion: true,
+                highlightGutterLine: false,
+                printMargin: false,
+                scrollPastEnd: 0.2,
+                showFoldWidgets: false,
+                showGutter: false,
+                showLineNumbers: false,
+                theme: "ace/theme/dracula",
+                useSvgGutterIcons: true,
 
-        // https://stackoverflow.com/questions/6637341/use-tab-to-indent-in-textarea
-        document.getElementById('python_text').addEventListener('keydown', function (e) {
-            if (e.key == 'Tab') {
-                e.preventDefault();
-                var start = this.selectionStart;
-                var end = this.selectionEnd;
+                mode: "ace/mode/python",
+            });
 
-                // set textarea value to: text before caret + tab + text after caret
-                this.value = this.value.substring(0, start) +
-                    "\t" + this.value.substring(end);
+            editor.session.on('change', function (input) {
+                p2r_internal(editor.getValue());
+            });
+        }
+        {
+            const editor = ace.edit("rust_text");
+            editor.setOptions({
+                highlightGutterLine: false,
+                printMargin: false,
+                showFoldWidgets: false,
+                showGutter: false,
+                showLineNumbers: false,
+                theme: "ace/theme/dracula",
+                useSvgGutterIcons: true,
 
-                // put caret at right position again
-                this.selectionStart =
-                    this.selectionEnd = start + 1;
-            }
-        });
+                maxLines: Infinity,
+                mode: "ace/mode/rust",
+                readOnly: true,
+            });
+
+        }
+
+        p2r_internal(ace.edit("python_text").getValue())
     </script>
 </body>
 
