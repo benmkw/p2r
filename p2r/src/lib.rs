@@ -1,13 +1,19 @@
+#![forbid(unsafe_code)]
 #![feature(iter_intersperse)]
+#![feature(iter_map_windows)]
+#![feature(let_chains)]
 
 use rustpython_parser::ast::{
-    ArgWithDefault, BoolOp, CmpOp, Constant, Expr, ExprAttribute, ExprBinOp, ExprBoolOp, ExprCall,
-    ExprCompare, ExprConstant, ExprDict, ExprFormattedValue, ExprIfExp, ExprJoinedStr, ExprLambda,
-    ExprList, ExprListComp, ExprName, ExprNamedExpr, ExprSet, ExprSetComp, ExprSlice,
+    ArgWithDefault, BoolOp, CmpOp, Constant, ExceptHandlerExceptHandler, Expr, ExprAttribute,
+    ExprBinOp, ExprBoolOp, ExprCall, ExprCompare, ExprConstant, ExprContext, ExprDict,
+    ExprDictComp, ExprFormattedValue, ExprGeneratorExp, ExprIfExp, ExprJoinedStr, ExprLambda,
+    ExprList, ExprListComp, ExprName, ExprNamedExpr, ExprSet, ExprSetComp, ExprSlice, ExprStarred,
     ExprSubscript, ExprTuple, ExprUnaryOp, MatchCase, Mod, Operator, Pattern, PatternMatchValue,
-    Stmt, StmtAnnAssign, StmtAssert, StmtAssign, StmtAugAssign, StmtClassDef, StmtExpr, StmtFor,
-    StmtFunctionDef, StmtIf, StmtMatch, StmtReturn, StmtTypeAlias, StmtWhile, UnaryOp,
+    Stmt, StmtAnnAssign, StmtAssert, StmtAssign, StmtAugAssign, StmtClassDef, StmtDelete, StmtExpr,
+    StmtFor, StmtFunctionDef, StmtIf, StmtImport, StmtImportFrom, StmtMatch, StmtRaise, StmtReturn,
+    StmtTry, StmtTypeAlias, StmtWhile, UnaryOp,
 };
+use std::{fmt::Write, ops::Deref};
 
 mod util;
 use util::PaddedT;
@@ -23,7 +29,7 @@ pub struct TranspileError {
 impl std::fmt::Display for TranspileError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_fmt(format_args!(
-            "Err at File {file}, Line {line}",
+            "Error at {file}:{line}",
             file = self.file,
             line = self.line
         ))
@@ -35,7 +41,7 @@ impl std::error::Error for TranspileError {}
 impl TranspileError {
     pub fn to_link(&self) -> String {
         format!(
-            "please, go to: https:://github.com/benmkw/python2rust/blob/main/{file}#L{line} and help improve this crate",
+            "please, go to: https:://github.com/benmkw/p2r/blob/main/{file}#L{line} and help improve this crate",
             file = self.file,
             line = self.line
         )
@@ -64,11 +70,19 @@ impl From<TranspileError> for ParseError {
     }
 }
 
+pub fn fmt(code: &str) -> String {
+    if let Ok(t) = syn::parse_file(code) {
+        prettyplease::unparse(&t)
+    } else {
+        code.to_string()
+    }
+}
+
 #[cfg(test)]
 mod test;
 
 pub fn p2r(ast: &str, ctx: &mut Ctx) -> Result<String, ParseError> {
-    let mut total = "fn main(){\n".to_string();
+    let mut total = String::new();
 
     let ast = rustpython_parser::parse(ast, rustpython_parser::Mode::Interactive, "./")
         .map_err(ParseError::ParseError)?;
@@ -80,7 +94,6 @@ pub fn p2r(ast: &str, ctx: &mut Ctx) -> Result<String, ParseError> {
     }?;
 
     for b in body.body {
-        // dbg!(&b);
         let rust = r_s(&b, ctx)?;
         total += &rust;
         if b.is_expr_stmt() {
@@ -89,51 +102,148 @@ pub fn p2r(ast: &str, ctx: &mut Ctx) -> Result<String, ParseError> {
         }
     }
 
-    total += "}\n";
+    // TODO move the imports and prelude to the front?
+    total += &format!(
+        "{}\n{}",
+        ctx.imports.gen_imports(),
+        ctx.imports.gen_prelude(),
+    );
 
-    Ok(if let Ok(t) = syn::parse_file(&total) {
-        prettyplease::unparse(&t)
-    } else {
-        total
-    })
+    Ok(total)
 }
 
-static MATH: &str = "
-/// polyfill for the python math module
-mod math {
-    // this can all be inlined into the callers using rust-analyzer
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+enum PyMath {
+    Sin,
+    Cos,
+    Pow,
+    Pi,
+    Abs,
+    Sqrt,
+}
 
-    #[inline(always)]
-    pub fn sin(v : f64) -> f64 {
-        v.sin()
-    }
-
-    #[inline(always)]
-    pub fn cos(v : f64) -> f64 {
-        v.sin()
-    }
-
-    #[inline(always)]
-    pub fn pow(a : f64, b : f64) -> f64 {
-        a.powf(b)
+impl<S: AsRef<str>> From<S> for PyMath {
+    fn from(value: S) -> Self {
+        let str = value.as_ref();
+        match str {
+            "sin" => Self::Sin,
+            "cos" => Self::Cos,
+            "pow" => Self::Pow,
+            "pi" => Self::Pi,
+            "abs" => Self::Abs,
+            "sqrt" => Self::Sqrt,
+            _ => panic!("could not find {str}"),
+        }
     }
 }
-";
+
+impl PyMath {
+    /// polyfill for the python math module
+    ///
+    /// this can all be inlined into the callers using rust-analyzer
+    fn to_rust(&self) -> &'static str {
+        match self {
+            PyMath::Sin => indoc::indoc! {"
+                #[inline(always)] pub fn sin(v : f64) -> f64 { v.sin() }
+            "},
+            PyMath::Cos => indoc::indoc! {"
+                #[inline(always)] pub fn cos(v : f64) -> f64 { v.cos() }
+            "},
+            PyMath::Pow => indoc::indoc! {"
+                #[inline(always)] pub fn pow(a : f64, b : f64) -> f64 { a.powf(b) }
+            "},
+            PyMath::Abs => indoc::indoc! {"
+                #[inline(always)] pub fn abs(a : f64) -> f64 { a.abs() }
+            "},
+            PyMath::Sqrt => indoc::indoc! {"
+                #[inline(always)] pub fn sqrt(a : f64) -> f64 { a.sqrt() }
+            "},
+            PyMath::Pi => indoc::indoc! {"pub const pi: f64 = std::f64::consts::PI;"},
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub enum Promotion {
+    #[default]
+    None,
+    /// functions which return Optional[T] can use .into() in rust
+    Into,
+    /// returning numpy arrays need py arg and need into_pyarray on return
+    IntoPyArray,
+}
+
+/// Mapping of:
+/// name of the imported function -> mapping to its alias (if given)
+#[derive(Debug, Clone, Default)]
+pub struct Imports {
+    // used BTreeMap for deterministic iteration order
+    // could just a hashmap with determinsic hasher as well
+    pub math: std::collections::BTreeMap<String, Option<String>>,
+    // pub called_math_fns: Vec<PyMath>, // or Vec<String>
+    /// fns called as math.foo without `from` import
+    pub math_import_name: Option<String>,
+
+    pub functools: std::collections::BTreeMap<String, Option<String>>,
+    pub itertools: std::collections::BTreeMap<String, Option<String>>,
+}
+
+impl Imports {
+    fn gen_prelude(&self) -> String {
+        if self.math.is_empty() {
+            return String::new();
+        }
+
+        let mut res = "\nmod prelude {\n".to_string();
+        for (name, _rename) in &self.math {
+            let rust = PyMath::from(name).to_rust();
+            res += rust;
+            res += "\n"
+        }
+
+        res += "\n}\n";
+        res
+    }
+
+    fn gen_imports(&self) -> String {
+        if self.math.is_empty() {
+            return String::new();
+        }
+
+        let imports = &self
+            .math
+            .iter()
+            .map(|(name, rename)| {
+                if let Some(rename) = rename {
+                    format!("{name} as {rename}")
+                } else {
+                    name.to_string()
+                }
+            })
+            .intersperse_with(|| ",".to_string())
+            .collect::<String>();
+        format!("use prelude::{{{imports}}};")
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
+    /// List of mappings of name -> member names
     pub classes: Vec<(String, Vec<String>)>,
     pub enums: Vec<String>,
     pub in_enum: bool,
     pub declare_var_mut: bool,
+    pub ret_needs_promotion: Promotion,
+    /// List of arguments (name, type_comment) which are np arrays
+    pub numpy_array_args: Vec<(String, String)>,
+    pub imports: Imports,
 }
 
 impl Ctx {
-    fn has_class(&self, class: &str) -> bool {
-        self.classes.iter().any(|s| s.0.as_str() == class)
-    }
-
-    fn get_class(&self, class: &str) -> Option<&[String]> {
+    /// None -> class not found
+    ///
+    /// empty Slice -> no members
+    fn get_class_members(&self, class: &str) -> Option<&[String]> {
         self.classes
             .iter()
             .find(|s| s.0.as_str() == class)
@@ -145,6 +255,7 @@ impl Ctx {
     }
 }
 
+/// convert statement
 fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
     match node {
         Stmt::FunctionDef(StmtFunctionDef {
@@ -156,25 +267,71 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
             type_comment: _,
             range: _,
             type_params: _,
-        }) => Ok(format!(
-            "fn {n}({a}) -> {ret_type} {{\n{b}}}\n",
-            n = name,
-            a = &args
+        }) => {
+            let args = &args
                 .args
                 .iter()
                 .map(|a| r_a(a, ctx))
                 .intersperse_with(|| Ok(", ".to_string()))
-                .collect::<TResult<String>>()?,
-            b = body
-                .iter()
-                .map(|s| r_s(s, ctx))
-                .collect::<TResult<String>>()?,
-            ret_type = match returns {
-                Some(r) => r_e(r, ctx)?,
+                .collect::<TResult<String>>()?;
+
+            let (args, lifetimes) = if ctx.numpy_array_args.is_empty() {
+                (args.to_string(), String::new())
+            } else {
+                (
+                    format!("py: pyo3::Python<'py>, {args}"),
+                    "<'py>".to_string(),
+                )
+            };
+
+            let ret_type = match returns {
+                Some(r) => r_annotation(r)?,
                 None => "()".to_string(),
+            };
+
+            // TODO do this with types instead of string comparisons?
+            if ret_type.starts_with("Option<") {
+                ctx.ret_needs_promotion = Promotion::Into;
             }
-        )),
-        Stmt::AsyncFunctionDef { .. } => Err(todo_link!()),
+            let ret_type = if ret_type.starts_with("numpy::") {
+                ctx.ret_needs_promotion = Promotion::IntoPyArray;
+                format!("&'py {ret_type}")
+            } else {
+                ret_type
+            };
+
+            let pyo3_conversions =
+                ctx.numpy_array_args
+                    .iter()
+                    .fold(String::new(), |mut output, (name, _t)| {
+                        let _ = write!(output, "let {name} = {name}.as_array().to_owned();");
+                        output
+                    });
+
+            let mut doc_comment = None;
+            let body = body
+                .iter()
+                .map(|s| {
+                    if let Some(Some(Some(doc))) = s
+                        .as_expr_stmt()
+                        .map(|e| e.value.as_constant_expr().map(|c| c.value.as_str()))
+                    {
+                        // free standing string
+                        // -> doc comment
+                        doc_comment = Some(format!("/*! {doc} */"));
+                        Ok(String::new())
+                    } else {
+                        r_s(s, ctx)
+                    }
+                })
+                .collect::<TResult<String>>()?;
+
+            Ok(format!(
+                "{doc}\nfn {n}{lifetimes}({args}) -> {ret_type} {{\n{pyo3_conversions}\n\n{body}}}\n",
+                n = name,
+                doc = doc_comment.unwrap_or_default()
+            ))
+        }
         Stmt::ClassDef(StmtClassDef {
             name,
             body,
@@ -227,6 +384,7 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
                 for b in body.iter() {
                     if let Some(field) = b.clone().ann_assign_stmt() {
                         field_names.push(r_e(&field.target, ctx)?);
+                        // TODO r_annotation?
                         typed_fields.push(r_s(&Stmt::AnnAssign(field.clone()), ctx)?);
                     } else if let Some(def) = b.clone().function_def_stmt() {
                         defs.push(def)
@@ -265,12 +423,28 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
         }
         Stmt::Return(StmtReturn { value, range: _ }) => {
             if let Some(v) = value {
-                Ok(format!("return {v};\n", v = r_e(v, ctx)?))
+                let v = r_e(v, ctx)?;
+                match ctx.ret_needs_promotion {
+                    Promotion::None => Ok(format!("return {v};\n")),
+                    Promotion::Into => Ok(format!("return ({v}).into();\n")),
+                    Promotion::IntoPyArray => Ok(format!("return ({v}).into_pyarray(py);\n")),
+                }
             } else {
                 Err(todo_link!())
             }
         }
-        Stmt::Delete { .. } => Err(todo_link!()),
+        Stmt::Delete(StmtDelete { range: _, targets }) => {
+            // TODO for copy types we could add a call like `_ = name; to remove them from the scope`
+            Ok(targets
+                .iter()
+                .map(|t| r_e(t, ctx))
+                .collect::<TResult<Vec<String>>>()?
+                .iter()
+                .cloned()
+                .map(|name| format!("drop({name})"))
+                .intersperse_with(|| ";".to_string())
+                .collect::<String>())
+        }
         Stmt::Assign(StmtAssign {
             targets,
             value,
@@ -323,7 +497,7 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
             Ok(format!(
                 "{target} : {annotation}",
                 target = r_e(target, ctx)?,
-                annotation = r_e(annotation, ctx)?
+                annotation = r_annotation(annotation)?
             ))
         }
         Stmt::For(StmtFor {
@@ -354,20 +528,30 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
                     .collect::<String>(),
             ))
         }
-        Stmt::AsyncFor(_) => Err(todo_link!()),
         Stmt::While(StmtWhile {
             range: _,
             test,
             body,
             orelse,
         }) => {
-            if !orelse.is_empty() {
-                return Err(todo_link!());
-            }
+            let orelse = orelse
+                .iter()
+                .map(|s| r_s(s, ctx))
+                .collect::<TResult<Vec<String>>>()?
+                .iter()
+                .cloned()
+                .padded(";\n".to_string())
+                .collect::<String>();
+
+            let test = r_e(test, ctx)?;
+            let orelse = if orelse.is_empty() {
+                String::new()
+            } else {
+                format!("if !({test}) {{{orelse}}}")
+            };
 
             Ok(format!(
-                "while {test} {{\n{body}\n}}\n",
-                test = r_e(test, ctx)?,
+                "while {test} {{\n{body}\n}}\n{orelse}",
                 body = body
                     .iter()
                     .map(|s| r_s(s, ctx))
@@ -381,11 +565,9 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
             orelse,
             range: _,
         }) => {
-            if orelse.len() >= 2 {
-                // "this gets called recursively for elif chains, it seem"
-                return Err(todo_link!());
-            }
-
+            // https://docs.python.org/3/library/ast.html#ast.If
+            let test = r_e(test, ctx)?;
+            // todo
             let body = body
                 .iter()
                 .map(|s| r_s(s, ctx))
@@ -395,28 +577,21 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
                 .padded(";\n".to_string())
                 .collect::<String>();
 
-            let test = r_e(test, ctx)?;
+            let orelse = orelse
+                .iter()
+                .map(|s| r_s(s, ctx))
+                .collect::<TResult<Vec<String>>>()?
+                .iter()
+                .cloned()
+                .padded(";\n".to_string())
+                .collect::<String>();
 
-            if orelse.is_empty() {
-                Ok(format!("if {test} {{\n{body}\n}}\n"))
+            Ok(if orelse.is_empty() {
+                format!("if {test} {{\n{body}\n}}\n")
             } else {
-                let orelse = orelse
-                    .iter()
-                    .map(|v| {
-                        let e = r_s(v, ctx)?;
-                        Ok(if !v.is_if_stmt() {
-                            format!("{{\n{e};\n}}")
-                        } else {
-                            e
-                        })
-                    })
-                    .collect::<TResult<String>>()?;
-
-                Ok(format!("if {test} {{\n{body}\n}} else {orelse}\n"))
-            }
+                format!("if {test} {{\n{body}\n}} else {{{orelse}}}\n")
+            })
         }
-        Stmt::With(_) => Err(todo_link!()),
-        Stmt::AsyncWith(_) => Err(todo_link!()),
         Stmt::Match(StmtMatch {
             range: _,
             subject,
@@ -450,17 +625,89 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
                 )
                 .collect::<TResult<String>>()?
         )),
-        Stmt::Raise(_) => Err(todo_link!()),
-        Stmt::Try(_) => Err(todo_link!()),
+        Stmt::Raise(StmtRaise {
+            range: _,
+            exc,
+            cause,
+        }) => {
+            if cause.is_some() {
+                // https://docs.python.org/3/library/ast.html#ast.Raise
+                // raise x from y
+                return Err(todo_link!());
+            }
+
+            if let Some(exc) = exc {
+                // TODO create an error enum member with this
+                // name automatically
+                // this is a bit hard, because we'd ideally collect all
+                // possible exceptions
+                let exeption_class = exc.as_call_expr().unwrap();
+                let class_name = exeption_class.func.as_name_expr().unwrap().id.to_string();
+
+                let args = exeption_class
+                    .args
+                    .iter()
+                    .map(|arg| r_e(arg, ctx))
+                    .intersperse_with(|| Ok(",".to_string()))
+                    .collect::<TResult<String>>()?;
+
+                return Ok(format!("panic!(\"{class_name}({args})\")"));
+            } else {
+                return Ok(format!("panic!()"));
+            }
+        }
+        Stmt::Try(StmtTry {
+            range: _,
+            body,
+            handlers,
+            orelse: _,
+            finalbody: _,
+        }) => {
+            let body = body
+                .iter()
+                .map(|s| r_s(s, ctx))
+                .intersperse_with(|| Ok(";\n".to_string()))
+                .collect::<TResult<String>>()?;
+
+            let handlers = handlers
+                .iter()
+                .map(|handler| {
+                    let ExceptHandlerExceptHandler {
+                        range: _,
+                        type_: _,
+                        name,
+                        body,
+                    } = handler.as_except_handler().unwrap();
+
+                    let body = body
+                        .iter()
+                        .map(|s| r_s(s, ctx))
+                        .collect::<TResult<String>>()
+                        .unwrap();
+
+                    let header = name
+                        .as_ref()
+                        .map(|name| name.to_string())
+                        .unwrap_or("error_name".to_string());
+
+                    format!("catch_it(|{header}| {{\n{body}\n}});")
+                })
+                .collect::<String>();
+
+            // TODO
+            // The else block lets you execute code when there is no error.
+            // The finally block lets you execute code, regardless of the result of the try- and except blocks.
+            // dbg!(orelse);
+            // dbg!(finalbody);
+            Ok(format!("try_it(|| {{{body}}});\n {handlers}"))
+        }
         Stmt::TypeAlias(StmtTypeAlias {
             range: _,
             name,
             type_params: _,
             value,
         }) => {
-            // TODO replace r_e(value) with r_type(value)
-            // which translates the python types to rust
-            let value = r_e(value, ctx)?;
+            let value = r_annotation(value)?;
             let name = r_e(name, ctx)?;
             Ok(format!("type {name} = {value};\n"))
         }
@@ -476,25 +723,91 @@ fn r_s(node: &Stmt, ctx: &mut Ctx) -> TResult<String> {
             )),
             None => Ok(format!("assert!({test});\n", test = r_e(test, ctx)?)),
         },
-        Stmt::Import(i) => Ok(if i.names.iter().any(|v| v.name.as_str() == "math") {
-            MATH.to_string()
-        } else {
-            String::new()
-        }),
-        Stmt::ImportFrom(_) => Ok(String::new()),
-        Stmt::Global(_) => {
-            // TODO translate to static/ and or once_cell
-            Err(todo_link!())
+        Stmt::Import(StmtImport { range: _, names }) => {
+            for name in names {
+                if name.name.as_str() == "math" {
+                    ctx.imports.math_import_name = Some(
+                        name.asname
+                            .as_ref()
+                            .unwrap_or_else(|| &name.name)
+                            .to_string(),
+                    );
+                }
+            }
+
+            Ok(String::new())
         }
-        Stmt::Nonlocal(_) => Err(todo_link!()),
+        Stmt::ImportFrom(StmtImportFrom {
+            range: _,
+            module,
+            names,
+            level,
+        }) => {
+            // https://docs.python.org/3/library/ast.html#ast.ImportFrom
+
+            assert_eq!(
+                level.unwrap().to_u32(),
+                0,
+                "only absolute imports supported"
+            );
+
+            let from = module.as_ref().unwrap().as_str();
+
+            // we can do proper import tracking such that
+            // import math as m; m.sin
+            // and
+            // import math as foo; foo.sin
+            // both resolve to the same thing
+            //
+            // this is not an implementation of the actual python import logic
+            // which is very complex but a simple approximation
+
+            let map = match from {
+                "math" => Some(&mut ctx.imports.math),
+                "functools" => {
+                    // TODO e.g. reduce
+                    Some(&mut ctx.imports.functools)
+                }
+                "itertools" => {
+                    // TODO e.g. reduce
+                    Some(&mut ctx.imports.itertools)
+                }
+                _ => None,
+            };
+
+            if let Some(map) = map {
+                for name in names {
+                    let member = name.name.as_str();
+
+                    let e = map.entry(member.to_string());
+                    let m = e.or_default();
+
+                    if let Some(rename) = &name.asname {
+                        *m = Some(rename.to_string());
+                    }
+                }
+            }
+
+            Ok(String::new())
+        }
         Stmt::Expr(StmtExpr { value, range: _ }) => Ok(r_e(value, ctx)?.to_string()),
         Stmt::Pass(_) => Ok("todo!()".to_string()),
         Stmt::Break(_) => Ok("break".to_string()),
         Stmt::Continue(_) => Ok("continue".to_string()),
+        Stmt::Global(_) => {
+            // TODO translate to static/ and or once_cell
+            Err(todo_link!())
+        }
+        Stmt::AsyncFor(_) => Err(todo_link!()),
+        Stmt::AsyncFunctionDef { .. } => Err(todo_link!()),
+        Stmt::AsyncWith(_) => Err(todo_link!()),
+        Stmt::Nonlocal(_) => Err(todo_link!()),
         Stmt::TryStar(_) => Err(todo_link!()),
+        Stmt::With(_) => Err(todo_link!()),
     }
 }
 
+/// convert expression
 fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
     match node {
         Expr::BoolOp(ExprBoolOp {
@@ -504,7 +817,7 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
         }) => Ok(format!(
             "{l} {o} {r}",
             l = r_e(&values[0], ctx)?,
-            o = r_bo(op),
+            o = r_bool(op),
             r = r_e(&values[1], ctx)?
         )),
         Expr::NamedExpr(ExprNamedExpr {
@@ -556,15 +869,20 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
             body,
             range: _,
         }) => {
-            if args.args.len() >= 2 {
-                Err(todo_link!())
-            } else {
-                Ok(format!(
-                    "|{a}| {{\n{b}\n}}",
-                    a = r_a(&args.args[0], ctx)?,
-                    b = r_e(body, ctx)?
-                ))
+            if args.kwarg.is_some() || !args.kwonlyargs.is_empty() || !args.posonlyargs.is_empty() {
+                return Err(todo_link!());
             }
+
+            let args = args
+                .clone()
+                .into_python_arguments()
+                .args
+                .iter()
+                .map(|a| a.arg.to_string())
+                .intersperse_with(|| ", ".to_string())
+                .collect::<String>();
+
+            Ok(format!("|{args}| {{\n{b}\n}}", b = r_e(body, ctx)?))
         }
         Expr::IfExp(ExprIfExp {
             test,
@@ -618,35 +936,50 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
             elt,
             generators,
             range: _,
-        }) => gen_generator(generators, elt, "Vec::<_>", ctx),
+        }) => gen_generator(generators, elt, Some("Vec::<_>"), ctx),
         Expr::SetComp(ExprSetComp {
             elt,
             generators,
             range: _,
-        }) => gen_generator(generators, elt, "HashSet::<_,_>", ctx),
+        }) => gen_generator(generators, elt, Some("HashSet::<_,_>"), ctx),
 
-        Expr::DictComp(_) => Err(todo_link!()),
-        Expr::GeneratorExp(_) => Err(todo_link!()),
-        Expr::Await(_) => Err(todo_link!()),
-        Expr::Yield(_) => Err(todo_link!()),
-        Expr::YieldFrom(_) => Err(todo_link!()),
+        Expr::DictComp(ExprDictComp {
+            range,
+            key,
+            value,
+            generators,
+        }) => {
+            let body = Expr::Tuple(ExprTuple {
+                range: *range,
+                elts: vec![*key.clone(), *value.clone()],
+                ctx: ExprContext::Load,
+            });
+
+            gen_generator(generators, &body, Some("HashMap::<_,_>"), ctx)
+        }
         Expr::Compare(ExprCompare {
             left,
             ops,
             comparators,
             range: _,
         }) => {
-            let mut s = String::new();
-            let lhs = r_e(left, ctx)?;
-            for (op, comparator) in ops.iter().zip(comparators.iter()) {
-                let comp = r_e(comparator, ctx)?;
+            let mut s = vec![];
+            for ((lhs, rhs), op) in std::iter::once(left.deref())
+                .chain(comparators.iter())
+                .map_windows(|[lhs, rhs]| (r_e(lhs, ctx).unwrap(), r_e(rhs, ctx).unwrap()))
+                .zip(ops.iter())
+            {
                 if op == &CmpOp::In {
-                    s.push_str(&format!("{comp}.into_iter().any(|v| v == {lhs})"));
+                    s.push(format!("{rhs}.into_iter().any(|v| v == {lhs})"));
                 } else {
-                    s.push_str(&format!("{lhs} {} {comp}", r_c(op)?));
+                    s.push(format!("{lhs} {op} {rhs}", op = r_c(op)?));
                 }
             }
-            Ok(s)
+
+            Ok(s.iter()
+                .cloned()
+                .intersperse_with(|| "&&".to_string())
+                .collect())
         }
         Expr::Call(ExprCall {
             func,
@@ -659,16 +992,45 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
                 .map(|e| r_e(e, ctx))
                 .collect::<TResult<Vec<_>>>()?;
 
-            let args_str = args
+            let function_name = r_e(func, ctx)?;
+
+            let positional_args = args
                 .iter()
                 .cloned()
                 .intersperse_with(|| ", ".to_string())
                 .collect::<String>();
 
-            let f = r_e(func, ctx)?;
+            let kwargs = keywords
+                .iter()
+                .map(|kw| {
+                    format!(
+                        "{name}: {value}",
+                        name = kw.arg.clone().unwrap(),
+                        value = r_e(&kw.value, ctx).unwrap()
+                    )
+                })
+                .intersperse_with(|| ", ".to_string())
+                .collect::<String>();
+
+            let args_str = match (positional_args.is_empty(), kwargs.is_empty()) {
+                (true, true) => String::new(),
+                (true, false) => {
+                    // TODO generate a struct with the FnName + "Params"
+                    // to get named arguments in rust
+
+                    format!("{function_name}Params {{\n{kwargs}\n}}")
+                }
+                (false, true) => positional_args,
+                (false, false) => {
+                    // args must come before kwargs
+                    format!("{positional_args}, {function_name}Params {{\n{kwargs}\n}}")
+                }
+            };
+
             // support for Dataclass like classes
             // TOOD handle __init__ method as well
-            if let Some(members) = ctx.get_class(&f) {
+            if let Some(members) = ctx.get_class_members(&function_name) {
+                // Class/ Struct Init
                 let body = if keywords.is_empty() {
                     // only args
                     members
@@ -697,38 +1059,75 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
                         .collect::<TResult<String>>()?
                 };
 
-                return Ok(format!("{f} {{\n{body}\n}}"));
-            } else if f == "print" {
+                return Ok(format!("{function_name} {{\n{body}\n}}"));
+            } else if function_name == "print" {
                 let fmt = "\"{:?}\"";
                 return Ok(format!("println!({fmt}, {args_str})"));
-            } else if f == "enumerate" {
+            } else if function_name == "enumerate" {
                 return Ok(format!("{args_str}.iter().enumerate()"));
-            } else if f == "zip" {
-                return Ok(args
+            } else if function_name == "zip" {
+                let add_mapping = args.len() > 2;
+
+                let args_str: String = args
                     .iter()
                     .cloned()
-                    .reduce(|acc, x| format!("{acc}.zip({x}.iter())"))
-                    .unwrap());
-            } else if f == "str" {
+                    .intersperse_with(|| ", ".to_string())
+                    .collect();
+
+                let mut args = args.iter();
+                let first = args.next().unwrap();
+
+                let mut zips = format!("{first}.iter()");
+                let mut maps = first.to_string();
+
+                for arg in args {
+                    zips = format!("{zips}.zip({arg}.iter())");
+                    maps = format!("({maps}, {arg})");
+                }
+
+                if add_mapping {
+                    zips = format!("{zips}.map(|{maps}| ({args_str}))")
+                }
+
+                return Ok(zips);
+            } else if function_name == "str" {
                 return Ok(format!("{args_str}.to_string()"));
-            } else if f == "len" {
+            } else if function_name == "len" {
                 return Ok(format!("{args_str}.len()"));
-            } else if f == "sum" {
+            } else if function_name == "sum" {
                 return Ok(format!("{args_str}.iter().sum()"));
-            } else if f == "isize" || f == "f64" {
+            } else if function_name == "int" || function_name == "float" {
+                let f = r_annotation(func)?;
                 return Ok(format!("(({args_str}) as {f})"));
-            } else if f == "range" {
-                // TODO handle start and step interval somehow here
-                return Ok(format!("(0..{args_str})"));
-            } else if let Some(math_method) = f.strip_prefix("math.") {
-                return Ok(format!("math::{math_method}({args_str})"));
-            } else if let Some(json_method) = f.strip_prefix("json.") {
+            } else if function_name == "range" {
+                // TODO handle start and step interval here in a more robust way
+                // keyword args start stop step need to be handled, ideally
+                // without any string based logic
+                let args: Vec<_> = args_str.split(',').collect();
+                match args.as_slice() {
+                    [end] => return Ok(format!("(0..{end})")),
+                    [start, end] => return Ok(format!("({start}..{end})")),
+                    [_start, _step, _stop] => {
+                        // start stop step
+                        return Err(todo_link!());
+                    }
+                    _ => unreachable!(),
+                }
+            } else if let Some(module) = &ctx.imports.math_import_name
+                && let Some(math_method) = function_name.strip_prefix(module)
+            {
+                let math_method = math_method.strip_prefix('.').unwrap();
+                // TOOD automate this for all modules not just math
+                // ctx.imports.called_math_fns.push(PyMath::from(math_method));
+                ctx.imports.math.insert(math_method.to_string(), None);
+                return Ok(format!("prelude::{math_method}({args_str})"));
+            } else if let Some(json_method) = function_name.strip_prefix("json.") {
                 if json_method == "loads" {
                     return Ok(format!("serde_json::from_string({args_str}).unwrap()"));
                 } else if json_method == "dumps" {
                     return Ok(format!("serde_json::to_string({args_str}).unwrap()"));
                 }
-            } else if let Some(json_method) = f.strip_prefix("np.") {
+            } else if let Some(json_method) = function_name.strip_prefix("np.") {
                 if json_method == "where" {
                     return Ok(format!("ndarray::azip(({args_str}), {{ TODO zip body }})"));
                 } else {
@@ -737,7 +1136,7 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
                 }
             }
 
-            Ok(format!("{f}({args_str})"))
+            Ok(format!("{function_name}({args_str})"))
         }
         Expr::FormattedValue(ExprFormattedValue {
             value,
@@ -776,7 +1175,21 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
         }) => match value {
             Constant::None => Ok("None".to_string()),
             Constant::Str(s) => Ok(format!("\"{}\"", s)),
-            Constant::Bytes(_b) => Err(todo_link!()),
+            Constant::Bytes(bytes) => {
+                // TODO read this in more detail
+                // https://peps.python.org/pep-3112/
+
+                // the rust docs are a bit sparse here as well
+                // https://doc.rust-lang.org/reference/tokens.html#examples
+                // https://doc.rust-lang.org/reference/tokens.html#byte-string-literals
+
+                let bytes = bytes.iter().fold(String::new(), |mut output, b| {
+                    let _ = write!(output, "\\x{:02x}", b);
+                    output
+                });
+
+                Ok(format!("b\"{bytes}\""))
+            }
             Constant::Bool(b) => {
                 if *b {
                     Ok("true".to_string())
@@ -816,23 +1229,15 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
             v = r_e(value, ctx)?,
             s = r_e(slice, ctx)?
         )),
-        Expr::Starred(_) => Err(todo_link!()),
         Expr::Name(ExprName {
             id,
             ctx: _,
             range: _,
-        }) => {
-            let prefix = if ctx.declare_var_mut { "mut " } else { "" };
-
-            let name = match id.as_str() {
-                "int" => "isize".to_string(),
-                "float" => "f64".to_string(),
-                "str" => "String".to_string(),
-                _ => id.to_string(),
-            };
-
-            Ok(format!("{prefix}{name}"))
-        }
+        }) => Ok(format!(
+            "{prefix}{name}",
+            prefix = if ctx.declare_var_mut { "mut " } else { "" },
+            name = id
+        )),
         Expr::List(ExprList {
             elts,
             ctx: _,
@@ -883,13 +1288,34 @@ fn r_e(node: &Expr, ctx: &mut Ctx) -> TResult<String> {
                     .unwrap_or(Ok("".to_string()))?
             ))
         }
+        Expr::GeneratorExp(ExprGeneratorExp {
+            range: _,
+            elt,
+            generators,
+        }) => {
+            // https://peps.python.org/pep-0289/
+            gen_generator(generators, elt, None, ctx)
+        }
+        Expr::Starred(ExprStarred {
+            range: _,
+            value,
+            ctx: _ctx_inner,
+        }) => {
+            // https://docs.python.org/3/tutorial/controlflow.html#tut-unpacking-arguments
+            let _value = r_e(value, ctx)?;
+            Err(todo_link!())
+        }
+        // https://github.com/rust-lang/rfcs/pull/3513
+        Expr::Await(_) => Err(todo_link!()),
+        Expr::Yield(_) => Err(todo_link!()),
+        Expr::YieldFrom(_) => Err(todo_link!()),
     }
 }
 
 fn gen_generator(
-    generators: &Vec<rustpython_parser::ast::Comprehension>,
+    generators: &[rustpython_parser::ast::Comprehension],
     elt: &Expr,
-    collection_type: &str,
+    collection_type: Option<&str>,
     ctx: &mut Ctx,
 ) -> TResult<String> {
     if generators.len() != 1 {
@@ -898,6 +1324,13 @@ fn gen_generator(
     }
     let g = &generators[0];
     let body = r_e(elt, ctx)?;
+
+    let collect = if let Some(collection_type) = collection_type {
+        format!(".collect::<{collection_type}>()")
+    } else {
+        String::new()
+    };
+
     if let Some(ifs) = g.ifs.first() {
         let body = format!(
             "if {cond} {{ Some({body}) }} else {{ None }} ",
@@ -905,59 +1338,148 @@ fn gen_generator(
         );
 
         Ok(format!(
-            "{gen}.into_iter().filter_map(|{target}| {{ {body} }}).collect::<{collection_type}>()",
+            "{gen}.into_iter().filter_map(|{target}| {{ {body} }}){collect}",
             gen = r_e(&g.iter, ctx)?,
             target = r_e(&g.target, ctx)?,
         ))
     } else {
         Ok(format!(
-            "{gen}.into_iter().map(|{target}| {{ {body} }}).collect::<{collection_type}>()",
+            "{gen}.into_iter().map(|{target}| {{ {body} }}){collect}",
             gen = r_e(&g.iter, ctx)?,
             target = r_e(&g.target, ctx)?,
         ))
     }
 }
 
+/// convert args
 fn r_a(node: &ArgWithDefault, ctx: &mut Ctx) -> TResult<String> {
     let node = node.to_arg().0;
-    Ok(if node.arg.as_str() == "self" {
-        "&self".to_string()
+    if node.arg.as_str() == "self" {
+        Ok("&self".to_string())
     } else {
         let t = &node
             .annotation
             .clone()
-            .map(|e| r_e(&e, ctx))
+            .map(|e| r_annotation(&e))
             .unwrap_or(Ok("()".to_string()))?;
 
-        format!("{n}: {t}", n = node.arg)
-    })
-}
+        if t.starts_with("numpy::") {
+            ctx.numpy_array_args
+                .push((node.arg.to_string(), t.to_string()));
+        }
 
-fn r_o(node: &Operator) -> TResult<&'static str> {
-    match node {
-        Operator::Add => Ok("+"),
-        Operator::Sub => Ok("-"),
-        Operator::Mult => Ok("*"),
-        Operator::MatMult => Err(todo_link!()),
-        Operator::Div => Ok("/"),
-        Operator::Mod => Ok("%"),
-        Operator::Pow => unreachable!(),
-        Operator::LShift => Ok("<<"),
-        Operator::RShift => Ok(">>"),
-        Operator::BitOr => Ok("|"),
-        Operator::BitXor => Ok("^"),
-        Operator::BitAnd => Ok("&"),
-        Operator::FloorDiv => Err(todo_link!()),
+        Ok(format!("{n}: {t}", n = node.arg))
     }
 }
 
-fn r_bo(node: &BoolOp) -> &str {
+fn r_annotation(e: &Expr) -> TResult<String> {
+    match e {
+        Expr::Constant(ExprConstant {
+            range: _,
+            value,
+            kind: _,
+        }) => Ok(value.clone().str().unwrap().to_owned()),
+        Expr::Subscript(ExprSubscript {
+            value,
+            slice,
+            ctx: _,
+            range: _,
+        }) => {
+            let v = r_annotation(value)?;
+            let s = r_annotation(slice)?;
+
+            if v == "tuple" {
+                Ok(format!("({s})"))
+            } else if let Some(v) = v.strip_prefix("Np") {
+                Ok(format!("numpy::Py{v}<{s}>"))
+            } else {
+                Ok(format!("{v}<{s}>"))
+            }
+        }
+        Expr::Name(ExprName {
+            id,
+            ctx: _,
+            range: _,
+        }) => {
+            // int str etc.
+
+            // TODO maybe we could return a function here which could do
+            // the correct wrapping etc.
+            // this would make tuple vs generic more precise and would
+            // allow better extensions
+            Ok(match id.as_str() {
+                "Dict" => "std::collections::HashMap".to_string(),
+                "float" => "f64".to_string(),
+                "int" => "isize".to_string(),
+                "List" => "Vec".to_string(),
+                "Optional" => "Option".to_string(),
+                "str" => "String".to_string(),
+                _ => id.to_string(),
+            })
+        }
+        Expr::Tuple(ExprTuple {
+            elts,
+            ctx: _,
+            range: _,
+        }) => elts
+            .iter()
+            .map(r_annotation)
+            .intersperse_with(|| Ok(", ".to_string()))
+            .collect::<TResult<String>>(),
+        Expr::Attribute(_) => Err(todo_link!()),
+        Expr::Await(_) => Err(todo_link!()),
+        Expr::BinOp(_) => Err(todo_link!()),
+        Expr::BoolOp(_) => Err(todo_link!()),
+        Expr::Call(_) => Err(todo_link!()),
+        Expr::Compare(_) => Err(todo_link!()),
+        Expr::Dict(_) => Err(todo_link!()),
+        Expr::DictComp(_) => Err(todo_link!()),
+        Expr::FormattedValue(_) => Err(todo_link!()),
+        Expr::GeneratorExp(_) => Err(todo_link!()),
+        Expr::IfExp(_) => Err(todo_link!()),
+        Expr::JoinedStr(_) => Err(todo_link!()),
+        Expr::Lambda(_) => Err(todo_link!()),
+        Expr::List(_) => Err(todo_link!()),
+        Expr::ListComp(_) => Err(todo_link!()),
+        Expr::NamedExpr(_) => Err(todo_link!()),
+        Expr::Set(_) => Err(todo_link!()),
+        Expr::SetComp(_) => Err(todo_link!()),
+        Expr::Slice(_) => Err(todo_link!()),
+        Expr::Starred(_) => Err(todo_link!()),
+        Expr::UnaryOp(_) => Err(todo_link!()),
+        Expr::Yield(_) => Err(todo_link!()),
+        Expr::YieldFrom(_) => Err(todo_link!()),
+    }
+}
+
+/// convert binary operator
+fn r_o(node: &Operator) -> TResult<&'static str> {
+    match node {
+        Operator::Add => Ok("+"),
+        Operator::BitAnd => Ok("&"),
+        Operator::BitOr => Ok("|"),
+        Operator::BitXor => Ok("^"),
+        Operator::Div => Ok("/"),
+        Operator::LShift => Ok("<<"),
+        Operator::Mod => Ok("%"),
+        Operator::Mult => Ok("*"),
+        Operator::RShift => Ok(">>"),
+        Operator::Sub => Ok("-"),
+        Operator::FloorDiv => Err(todo_link!()),
+        Operator::MatMult => Err(todo_link!()),
+        Operator::Pow => unreachable!(),
+    }
+}
+
+/// convert boolean operation
+fn r_bool(node: &BoolOp) -> &str {
     match node {
         BoolOp::And => "&&",
         BoolOp::Or => "||",
     }
 }
 
+/// convert comparison
 fn r_c(node: &CmpOp) -> TResult<&str> {
     match node {
         CmpOp::Eq => Ok("=="),
@@ -966,8 +1488,8 @@ fn r_c(node: &CmpOp) -> TResult<&str> {
         CmpOp::LtE => Ok("<="),
         CmpOp::Gt => Ok(">"),
         CmpOp::GtE => Ok(">="),
-        CmpOp::Is => Err(todo_link!()),
-        CmpOp::IsNot => Err(todo_link!()),
+        CmpOp::Is => Ok("=="),    // a bit of a hack
+        CmpOp::IsNot => Ok("!="), // a bit of a hack
         CmpOp::In => unreachable!(),
         CmpOp::NotIn => Ok("!contains(TODO)"),
     }
@@ -976,12 +1498,12 @@ fn r_c(node: &CmpOp) -> TResult<&str> {
 fn r_p(node: &Pattern, ctx: &mut Ctx) -> TResult<String> {
     match node {
         Pattern::MatchValue(PatternMatchValue { range: _, value }) => r_e(value, ctx),
-        Pattern::MatchSingleton(_) => Err(todo_link!()),
-        Pattern::MatchSequence(_) => Err(todo_link!()),
-        Pattern::MatchMapping(_) => Err(todo_link!()),
-        Pattern::MatchClass(_) => Err(todo_link!()),
-        Pattern::MatchStar(_) => Err(todo_link!()),
         Pattern::MatchAs(_) => Err(todo_link!()),
+        Pattern::MatchClass(_) => Err(todo_link!()),
+        Pattern::MatchMapping(_) => Err(todo_link!()),
         Pattern::MatchOr(_) => Err(todo_link!()),
+        Pattern::MatchSequence(_) => Err(todo_link!()),
+        Pattern::MatchSingleton(_) => Err(todo_link!()),
+        Pattern::MatchStar(_) => Err(todo_link!()),
     }
 }

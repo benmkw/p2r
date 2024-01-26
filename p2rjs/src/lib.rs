@@ -21,25 +21,30 @@ pub struct Res {
 #[wasm_bindgen]
 impl Res {
     #[wasm_bindgen(getter)]
+    #[must_use]
     pub fn res_t(&self) -> String {
         self.t.clone()
     }
 
     #[wasm_bindgen(getter)]
+    #[must_use]
     pub fn code(&self) -> Option<String> {
         self.code.clone()
     }
 
     #[wasm_bindgen(getter)]
+    #[must_use]
     pub fn file(&self) -> Option<String> {
         self.file.clone()
     }
     #[wasm_bindgen(getter)]
+    #[must_use]
     pub fn line(&self) -> Option<u32> {
         self.line
     }
 
     #[wasm_bindgen(getter)]
+    #[must_use]
     pub fn parse_error(&self) -> Option<String> {
         self.parse_error.clone()
     }
@@ -51,6 +56,7 @@ pub fn greet(name: &str) {
 }
 
 #[wasm_bindgen]
+#[must_use]
 pub fn p2r(content: &str) -> Res {
     let mut ctx = p2r::Ctx::default();
     let res = p2r::p2r(content, &mut ctx);
@@ -58,7 +64,7 @@ pub fn p2r(content: &str) -> Res {
     match res {
         Ok(code) => Res {
             t: "ok".to_string(),
-            code: Some(code),
+            code: Some(p2r::fmt(&format!("fn main(){{{code}}}"))),
             file: None,
             line: None,
             parse_error: None,

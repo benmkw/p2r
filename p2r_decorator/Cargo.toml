@@ -1,5 +1,5 @@
 [package]
-name = "p2rjs"
+name = "p2r_decorator"
 version = "0.2.0"
 edition = "2021"
 
@@ -8,5 +8,5 @@ edition = "2021"
 crate-type = ["cdylib"]
 
 [dependencies]
-wasm-bindgen = "0.2.87"
+pyo3 = { version = "0.20.0", features = ["extension-module"] }
 p2r = { path = "../p2r" }
