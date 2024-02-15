@@ -18,6 +18,10 @@
 
 <body>
 
+    <select name="testcases" id="testcases-select">
+        <option value="">--Open an example--</option>
+    </select>
+
     <section>
         <pre id="python_text">from dataclasses import dataclass
 
@@ -58,6 +62,7 @@ a_inst = EFoo.A</pre>
 
     <script src="ace.js" type="text/javascript" charset="utf-8"></script>
     <script src="ext-language_tools.js" type="text/javascript" charset="utf-8"></script>
+    <script src="testcases.js" type="text/javascript" charset="utf-8"></script>
 
     <script type="module" async>
         import init, { greet, p2r } from "./pkg/p2rjs.js";
@@ -135,7 +140,7 @@ a_inst = EFoo.A</pre>
                 document.getElementById("transpileErr").innerHTML = "";
                 document.getElementById("parseErr").innerHTML = "";
             } else if (res.res_t == "TranspileError") {
-                document.getElementById("transpileErr").innerHTML = `TODO impl at file: ${res.file}:${res.line}`;
+                document.getElementById("transpileErr").innerHTML = `TODO impl at file: ${res.file}:${res.line} (https:://github.com/benmkw/p2r/blob/main/${res.file}#L${res.line})`;
                 // if transpilation had an error, the parser had a success
                 document.getElementById("parseErr").innerHTML = "";
             } else if (res.res_t == "ParseError") {
@@ -144,6 +149,21 @@ a_inst = EFoo.A</pre>
             } else {
                 console.assert(false)
             }
+        }
+
+        {
+            const select = document.getElementById("testcases-select");
+            Object.keys(examples).forEach(function (example, _index) {
+                select.appendChild(new Option(example))
+            });
+
+            select.addEventListener("change", function (event) {
+                const sample = event.target.value;
+                // this is a bit of a hack
+                const sample_code = examples[sample]["python"].replace(/\\"/g, '"');
+
+                ace.edit("python_text").setValue(sample_code)
+            });
         }
 
         {
