@@ -5,8 +5,8 @@ edition = "2021"
 
 [dependencies]
 rustpython-parser = { workspace = true }
-prettyplease = { version = "0.2.15", default-features = false }
-syn = { version = "2.0.38", default-features = false, features = ["parsing"] }
+prettyplease = { version = "0.2.16", default-features = false }
+syn = { version = "2.0.49", default-features = false, features = ["parsing"] }
 indoc = "2"
 
 [dev-dependencies]

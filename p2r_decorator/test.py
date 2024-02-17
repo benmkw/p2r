@@ -11,6 +11,7 @@ def comp(x: int) -> int:
         return 42
 
 res = comp(3)
+assert res == 42
 print(res)
 
 
@@ -22,6 +23,7 @@ def math_arr_np(
     return a * x + y
 
 arr_res = math_arr_np(a=3.0, x=np.array([1.0, 2.0, 3.0]), y=np.array([1.0, 2.0, 3.0]))
+assert np.allclose(arr_res, [4.0,  8.0, 12.0])
 print(arr_res)
 
 # TODO in place mutation

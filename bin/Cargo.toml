@@ -5,5 +5,5 @@ edition = "2021"
 
 [dependencies]
 p2r = { path = "../p2r" }
-xflags = "0.3.1"
+xflags = "0.3.2"
 # rustpython-parser  = { workspace = true }

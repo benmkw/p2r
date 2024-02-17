@@ -81,10 +81,10 @@ pub fn fmt(code: &str) -> String {
 #[cfg(test)]
 mod test;
 
-pub fn p2r(ast: &str, ctx: &mut Ctx) -> Result<String, ParseError> {
+pub fn p2r(code: &str, ctx: &mut Ctx) -> Result<String, ParseError> {
     let mut total = String::new();
 
-    let ast = rustpython_parser::parse(ast, rustpython_parser::Mode::Interactive, "./")
+    let ast = rustpython_parser::parse(code, rustpython_parser::Mode::Interactive, "./")
         .map_err(ParseError::ParseError)?;
     let body = match ast {
         Mod::Module(_) => Err(todo_link!()),
